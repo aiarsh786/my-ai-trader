@@ -1,7 +1,7 @@
 """
 ai_trader.py
-Updated: logging, Telegram/email notifications, safety checks.
-Beginner-friendly — copy/paste to overwrite your existing ai_trader.py
+MODIFIED FOR GITHUB ACTIONS (VERSION 2)
+- Removed 'while True:' loop to run on a schedule.
 """
 
 import os
@@ -54,14 +54,14 @@ STOCK_SYMBOLS = ["AAPL", "MSFT"]
 CRYPTO_SYMBOLS = ["BTC/USDT", "ETH/USDT"]
 FOREX_PAIRS = [("USD", "INR"), ("EUR", "USD")]
 
-SLEEP_SECONDS = 120           # polling freq
-ALERT_CONFIDENCE = 0.85       # threshold for 'strong' alerts
+# SLEEP_SECONDS is no longer needed
+ALERT_CONFIDENCE = 0.85      # threshold for 'strong' alerts
 
 MODEL_FOLDER = "models"
 if not os.path.exists(MODEL_FOLDER):
     os.makedirs(MODEL_FOLDER)
 
-# Notification config from .env (optional)
+# Notification config from .env (or GitHub Secrets)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 SMTP_HOST = os.getenv("SMTP_HOST")
@@ -72,23 +72,17 @@ TO_EMAIL = os.getenv("TO_EMAIL")
 FOREX_API_KEY = os.getenv("FOREX_API_KEY")
 
 # ---------------- Safety controls ----------------
-# Minimum seconds between alerts for the same symbol (cooldown)
-PER_SYMBOL_COOLDOWN = 60 * 60   # 1 hour by default
-# Maximum strong alerts per symbol per day
+PER_SYMBOL_COOLDOWN = 60 * 60  # 1 hour by default
 MAX_SIGNALS_PER_DAY = 3
 
-# Track last alert times and counts
-last_alert_time = {}   # symbol -> datetime of last alert
-alerts_today = {}      # symbol -> (date_str -> count)
+last_alert_time = {}  
+alerts_today = {}    
 
 def can_alert(symbol):
-    """Return True if safety checks allow an alert for this symbol."""
     now = datetime.utcnow()
-    # cooldown check
     last = last_alert_time.get(symbol)
     if last and (now - last).total_seconds() < PER_SYMBOL_COOLDOWN:
         return False
-    # daily count check
     today = now.strftime("%Y-%m-%d")
     counts = alerts_today.get(symbol, {})
     if counts.get(today, 0) >= MAX_SIGNALS_PER_DAY:
@@ -96,7 +90,6 @@ def can_alert(symbol):
     return True
 
 def record_alert(symbol):
-    """Mark that we sent an alert for symbol now."""
     now = datetime.utcnow()
     last_alert_time[symbol] = now
     today = now.strftime("%Y-%m-%d")
@@ -107,6 +100,7 @@ def record_alert(symbol):
 # ---------------- Notification functions ----------------
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        notify_console("Telegram keys not found. Skipping alert.", "warning")
         return False
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -118,7 +112,6 @@ def send_telegram(msg):
         return False
 
 def send_email(subject, body):
-    """Send simple plaintext email if SMTP configured."""
     if not (SMTP_HOST and SMTP_USER and SMTP_PASS and TO_EMAIL):
         return False
     try:
@@ -168,18 +161,9 @@ def ensure_df_from_yf(obj):
         return pd.DataFrame({"Close": obj.astype(float)})
     if isinstance(obj, pd.DataFrame):
         if isinstance(obj.columns, pd.MultiIndex):
-            newcols = []
-            for col in obj.columns:
-                parts = [str(p) for p in col if p is not None and str(p) != ""]
-                chosen = parts[-1] if parts else "_".join(parts)
-                newcols.append(chosen)
-            obj.columns = newcols
-        cols_lower = [str(c).lower() for c in obj.columns.astype(str)]
-        if "close" not in cols_lower:
-            for i, c in enumerate(cols_lower):
-                if "close" in c:
-                    obj = obj.rename(columns={obj.columns[i]: "Close"})
-                    break
+            obj.columns = obj.columns.droplevel(0)
+        if "Close" not in obj.columns and "Adj Close" in obj.columns:
+            obj = obj.rename(columns={"Adj Close": "Close"})
         return obj
     try:
         return pd.DataFrame(obj)
@@ -241,7 +225,6 @@ def fetch_forex_rate(base, quote):
             return float(j["rates"][quote])
     except Exception:
         pass
-    # fallback
     try:
         r2 = requests.get(f"https://open.er-api.com/v6/latest/{base}", timeout=8)
         j2 = r2.json()
@@ -307,6 +290,8 @@ def train_and_persist_model(symbol, X, y):
     return model
 
 def build_or_load_model_for_stock(symbol):
+    # Note: GitHub Actions servers are temporary. They won't find a saved model.
+    # This will train a new model every time, which is what we want.
     model = load_model_if_exists(symbol)
     if model is not None:
         return model
@@ -365,9 +350,9 @@ def assess_crypto(exchange, pair):
         notify_console("Crypto error: " + str(e), "warning")
         return {"pair": pair, "signal":"ERROR"}
 
-# ---------------- Main loop ----------------
-def main_loop():
-    notify_console("Starting AI trading assistant with safety checks.")
+# ---------------- Main loop (NO LONGER A LOOP) ----------------
+def main_run():
+    notify_console("Starting AI trading assistant run...")
     stock_models = {}
     for s in STOCK_SYMBOLS:
         try:
@@ -376,60 +361,47 @@ def main_loop():
             notify_console(f"Skipping {s} (model error): {e}", "warning")
 
     exchange = ccxt.binance({"enableRateLimit": True})
-    loop_count = 0
-
-    while True:
+    
+    # Stocks
+    for s, model in stock_models.items():
+        if model is None:
+            continue
         try:
-            loop_count += 1
-            # Stocks
-            for s, model in stock_models.items():
-                if model is None:
-                    continue
-                try:
-                    res = assess_stock(s, model)
-                    # Only act on STRONG signals and if safety checks allow
-                    if res["signal"] in ("STRONG_BUY", "STRONG_SELL"):
-                        if can_alert(s):
-                            msg = f"{res['signal']} {s} @ {res['close']:.2f} (p_up={res['prob_up']:.2f}, rsi={res['rsi']:.1f})"
-                            notify_console(msg, "info")
-                            send_telegram(msg)
-                            send_email(f"ALERT {s} {res['signal']}", msg)
-                            record_alert(s)
-                        else:
-                            notify_console(f"Signal {res['signal']} for {s} suppressed by safety rules.", "info")
-                except Exception as e:
-                    notify_console(f"Error assessing {s}: {e}", "warning")
-
-            # Crypto
-            for pair in CRYPTO_SYMBOLS:
-                try:
-                    r = assess_crypto(exchange, pair)
-                    if r.get("signal") in ("BUY", "SELL"):
-                        # for crypto use pair as symbol for cooldown tracking
-                        symbol = pair.replace("/", "_")
-                        if can_alert(symbol):
-                            msg = f"{r['pair']} {r['signal']} price={r.get('price')}"
-                            notify_console(msg, "info")
-                            send_telegram(msg)
-                            send_email(f"ALERT {pair} {r['signal']}", msg)
-                            record_alert(symbol)
-                except Exception as e:
-                    notify_console(f"Crypto assess error for {pair}: {e}", "warning")
-
-            # Forex (less frequent)
-            if loop_count % 3 == 0:
-                for base, quote in FOREX_PAIRS:
-                    rate = fetch_forex_rate(base, quote)
-                    if rate:
-                        notify_console(f"FX {base}/{quote} = {rate:.4f}", "info")
-
-            time.sleep(SLEEP_SECONDS)
-        except KeyboardInterrupt:
-            notify_console("Stopped by user.", "info")
-            break
+            res = assess_stock(s, model)
+            if res["signal"] in ("STRONG_BUY", "STRONG_SELL"):
+                # We don't need 'can_alert' checks on a 15-min schedule
+                msg = f"{res['signal']} {s} @ {res['close']:.2f} (p_up={res['prob_up']:.2f}, rsi={res['rsi']:.1f})"
+                notify_console(msg, "info")
+                send_telegram(msg)
+                send_email(f"ALERT {s} {res['signal']}", msg)
+                record_alert(s) # This is good to keep
+            else:
+                notify_console(f"Signal for {s} is {res['signal']}. No alert.", "info")
         except Exception as e:
-            notify_console(f"Main loop error: {e}", "error")
-            time.sleep(5)
+            notify_console(f"Error assessing {s}: {e}", "warning")
+
+    # Crypto
+    for pair in CRYPTO_SYMBOLS:
+        try:
+            r = assess_crypto(exchange, pair)
+            if r.get("signal") in ("BUY", "SELL"):
+                symbol = pair.replace("/", "_")
+                msg = f"{r['pair']} {r['signal']} price={r.get('price')}"
+                notify_console(msg, "info")
+                send_telegram(msg)
+                send_email(f"ALERT {pair} {r['signal']}", msg)
+                record_alert(symbol)
+        except Exception as e:
+            notify_console(f"Crypto assess error for {pair}: {e}", "warning")
+
+    # Forex
+    for base, quote in FOREX_PAIRS:
+        rate = fetch_forex_rate(base, quote)
+        if rate:
+            notify_console(f"FX {base}/{quote} = {rate:.4f}", "info")
+
+    notify_console("AI trading assistant run finished.")
+
 
 if __name__ == "__main__":
-    main_loop()
+    main_run()
