@@ -1,0 +1,30 @@
+name: Run AI Trader
+on:
+  schedule:
+    # This runs the script every 15 minutes
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    # This adds a button to run it manually
+
+jobs:
+  run-trader:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run the AI Trader script
+        env:
+          # This pulls in the secrets you made
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FOREX_API_KEY: ${{ secrets.FOREX_API_KEY }}
+        run: python ai_trader.py
