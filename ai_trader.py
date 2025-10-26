@@ -360,7 +360,7 @@ def main_run():
         except Exception as e:
             notify_console(f"Skipping {s} (model error): {e}", "warning")
 
-    exchange = ccxt.binance({"enableRateLimit": True})
+    exchange = ccxt.kucoin({"enableRateLimit": True})
     
     # Stocks
     for s, model in stock_models.items():
@@ -404,4 +404,5 @@ def main_run():
 
 
 if __name__ == "__main__":
+
     main_run()
